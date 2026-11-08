@@ -897,51 +897,50 @@ function hideCardMessage(element) {
 
 
 // ========================================
-// 설정 화면
+// 설정 화면 - Google Apps Script 연결
 // ========================================
 
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+// Google Apps Script 웹 앱 URL
+const GOOGLE_SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxHXVXqN6CygNOtGY_Ww08fOAYhhr5kZBsuGf1hVBhgqlkxHliRxkiCFMhXtDM-_oU6/exec";
 
-// 화면에 들어올 때 현재 설정 불러오기
+// 브라우저에 알림 설정 임시 저장
+const NOTIFICATION_KEY = "diary_notification_settings_" + userId;
+
+
+// 설정 화면에 들어왔을 때 저장된 값 불러오기
 async function loadSettings() {
 
     hideCardMessage(settingsMessage);
 
-    settingsStatus.textContent = "설정을 불러오는 중이에요...";
-    settingsStatus.classList.remove("hidden");
-
     try {
 
-        const data =
-            await apiRequest("GET", "/api/settings");
+        const saved = JSON.parse(
+            localStorage.getItem(NOTIFICATION_KEY) || "{}"
+        );
 
-        settingsEmail.value = data.email || "";
-        settingsTime.value = data.notify_time || "";
-        settingsNotify.checked = data.notify_enabled === true;
+        settingsEmail.value = saved.email || "";
+        settingsTime.value = saved.alarm_time || "";
+        settingsNotify.checked = saved.enabled === true;
 
-        // 기억 기능 스위치는 일기 쓰기 화면의 동의 체크 값을 그대로 따름
         settingsMemory.checked = memoryConsent.checked;
 
         settingsStatus.classList.add("hidden");
 
     } catch (error) {
 
-        settingsStatus.classList.add("hidden");
-
-        showCardMessage(
-            settingsMessage,
-            "error",
-            error.message
-        );
+        settingsEmail.value = "";
+        settingsTime.value = "";
+        settingsNotify.checked = false;
 
     }
-
 }
 
 
+// 설정 저장 버튼
 settingsSaveButton.addEventListener(
     "click",
     async () => {
@@ -949,266 +948,87 @@ settingsSaveButton.addEventListener(
         hideCardMessage(settingsMessage);
 
         const email = settingsEmail.value.trim();
-        const notifyTime = settingsTime.value.trim();
-        const notifyEnabled = settingsNotify.checked;
+        const alarmTime = settingsTime.value.trim();
+        const enabled = settingsNotify.checked;
 
-
-        // 형식 검사
-        if (email && !EMAIL_PATTERN.test(email)) {
+        // 이메일 검사
+        if (!EMAIL_PATTERN.test(email)) {
 
             showCardMessage(
                 settingsMessage,
                 "error",
-                "이메일 형식이 올바르지 않아요."
+                "올바른 이메일 주소를 입력해주세요."
             );
 
             settingsEmail.focus();
-
             return;
-
         }
 
-        if (notifyTime && !TIME_PATTERN.test(notifyTime)) {
+        // 시간 검사
+        if (!TIME_PATTERN.test(alarmTime)) {
 
             showCardMessage(
                 settingsMessage,
                 "error",
-                "알림 시간은 HH:MM 형식(예: 21:30)으로 입력해주세요."
+                "알림 시간을 선택해주세요."
             );
 
             settingsTime.focus();
-
             return;
-
         }
-
-        if (notifyEnabled && (!email || !notifyTime)) {
-
-            showCardMessage(
-                settingsMessage,
-                "error",
-                "알림을 받으려면 이메일과 알림 시간을 모두 입력해주세요."
-            );
-
-            return;
-
-        }
-
 
         settingsSaveButton.disabled = true;
         settingsSaveButton.textContent = "저장하는 중...";
 
         try {
 
-            await apiRequest(
-                "POST",
-                "/api/settings",
-                {
-                    email: email,
-                    notify_time: notifyTime,
-                    notify_enabled: notifyEnabled,
-                    memory_enabled: settingsMemory.checked
-                }
+            const data = {
+                user_id: userId,
+                email: email,
+                alarm_time: alarmTime,
+                enabled: enabled,
+                timezone: "Asia/Seoul"
+            };
+
+            // Apps Script로 데이터 전송
+            // text/plain을 사용해 브라우저의 사전 CORS 요청 방지
+            await fetch(GOOGLE_SCRIPT_URL, {
+                method: "POST",
+                mode: "no-cors",
+                headers: {
+                    "Content-Type": "text/plain;charset=utf-8"
+                },
+                body: JSON.stringify(data)
+            });
+
+            // 브라우저에도 설정값 저장
+            localStorage.setItem(
+                NOTIFICATION_KEY,
+                JSON.stringify(data)
             );
 
-            // 저장 성공 시 일기 쓰기 화면의 동의 체크도 같은 값으로
             setMemoryConsent(settingsMemory.checked);
 
             showCardMessage(
                 settingsMessage,
                 "success",
-                "설정을 저장했어요."
+                "저장 요청을 보냈어요. 구글 시트에서 확인해주세요."
             );
 
         } catch (error) {
 
+            console.error("알림 설정 저장 오류:", error);
+
             showCardMessage(
                 settingsMessage,
                 "error",
-                error.message
+                "저장에 실패했어요. 다시 시도해주세요."
             );
 
         } finally {
 
             settingsSaveButton.disabled = false;
             settingsSaveButton.textContent = "설정 저장하기";
-
-        }
-
-    }
-);
-
-
-// ========================================
-// 마음 기록 화면
-// ========================================
-
-// "2026-11-06" → "2026.11.06"
-function formatMemoryDate(dateText) {
-
-    return (dateText || "").replace(/-/g, ".");
-
-}
-
-// 강도 1~5를 ●●●○○ 모양으로
-function formatIntensity(intensity) {
-
-    const value =
-        Math.max(1, Math.min(5, Number(intensity) || 0));
-
-    return "●".repeat(value) + "○".repeat(5 - value);
-
-}
-
-
-// 기록 목록 그리기 (서버 값은 textContent로만 넣음)
-function renderMemories(memories) {
-
-    memoriesList.textContent = "";
-
-    if (!memories.length) {
-
-        memoriesEmpty.classList.remove("hidden");
-        deleteArea.classList.add("hidden");
-
-        return;
-
-    }
-
-    memoriesEmpty.classList.add("hidden");
-    deleteArea.classList.remove("hidden");
-
-    memories.forEach((memory) => {
-
-        const item = document.createElement("li");
-        item.className = "memory-item";
-
-        const date = document.createElement("span");
-        date.className = "memory-date";
-        date.textContent = formatMemoryDate(memory.date);
-
-        const emotion = document.createElement("span");
-        emotion.className = "memory-emotion";
-        emotion.textContent = memory.emotion || "기록";
-
-        const intensity = document.createElement("span");
-        intensity.className = "memory-intensity";
-        intensity.textContent = formatIntensity(memory.intensity);
-        intensity.title = "감정의 세기 " + (Number(memory.intensity) || "-") + " / 5";
-
-        item.append(date, emotion, intensity);
-
-        if (memory.situation) {
-
-            const situation = document.createElement("p");
-            situation.className = "memory-situation";
-            situation.textContent = memory.situation;
-
-            item.append(situation);
-
-        }
-
-        memoriesList.append(item);
-
-    });
-
-}
-
-
-// 화면에 들어올 때 내 기록 불러오기
-async function loadMemories() {
-
-    hideCardMessage(memoriesMessage);
-    deleteConfirm.classList.add("hidden");
-
-    memoriesStatus.textContent = "마음 기록을 불러오는 중이에요...";
-    memoriesStatus.classList.remove("hidden");
-
-    try {
-
-        const data =
-            await apiRequest("GET", "/api/memories");
-
-        memoriesStatus.classList.add("hidden");
-
-        renderMemories(
-            Array.isArray(data.memories) ? data.memories : []
-        );
-
-    } catch (error) {
-
-        memoriesStatus.classList.add("hidden");
-
-        memoriesList.textContent = "";
-        memoriesEmpty.classList.add("hidden");
-        deleteArea.classList.add("hidden");
-
-        showCardMessage(
-            memoriesMessage,
-            "error",
-            error.message
-        );
-
-    }
-
-}
-
-
-// 전체 삭제: 화면 안의 확인 영역에서 한 번 더 확인
-deleteOpenButton.addEventListener(
-    "click",
-    () => {
-
-        hideCardMessage(memoriesMessage);
-        deleteConfirm.classList.remove("hidden");
-
-    }
-);
-
-deleteCancelButton.addEventListener(
-    "click",
-    () => {
-
-        deleteConfirm.classList.add("hidden");
-
-    }
-);
-
-deleteConfirmButton.addEventListener(
-    "click",
-    async () => {
-
-        deleteConfirmButton.disabled = true;
-        deleteCancelButton.disabled = true;
-        deleteConfirmButton.textContent = "삭제하는 중...";
-
-        try {
-
-            await apiRequest("DELETE", "/api/memories");
-
-            deleteConfirm.classList.add("hidden");
-
-            renderMemories([]);
-
-            showCardMessage(
-                memoriesMessage,
-                "success",
-                "마음 기록을 모두 삭제했어요."
-            );
-
-        } catch (error) {
-
-            showCardMessage(
-                memoriesMessage,
-                "error",
-                error.message
-            );
-
-        } finally {
-
-            deleteConfirmButton.disabled = false;
-            deleteCancelButton.disabled = false;
-            deleteConfirmButton.textContent = "전체 삭제하기";
 
         }
 
